@@ -1,6 +1,6 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Home, ListMusic, Search, Settings, Play, Pause, SkipForward, SkipBack, Shuffle, Repeat, Heart, Download, MoreVertical, X, Maximize2, Mic2, Volume2, Bluetooth, Youtube } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Home, ListMusic, Search, Settings, Play, Pause, SkipForward, SkipBack, Shuffle, Repeat, Download, MoreVertical, X, Mic2, Volume2, Bluetooth, Youtube } from 'lucide-react';
 import { Song, Tab, MusicQuality, UserProfile } from './types';
 import { MOCK_SONGS, CATEGORIES, BACKGROUND_IMAGE } from './constants';
 import { searchOnlineSongs, fetchLyrics, searchYouTube, getYoutubeStreamUrl } from './geminiService';
@@ -13,7 +13,6 @@ const App: React.FC = () => {
   const [isPlayerOpen, setIsPlayerOpen] = useState(false);
   const [progress, setProgress] = useState(0);
   const [localSongs, setLocalSongs] = useState<Song[]>(MOCK_SONGS);
-  const [favorites, setFavorites] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Song[]>([]);
   const [user, setUser] = useState<UserProfile>({
@@ -63,6 +62,7 @@ const App: React.FC = () => {
         if (!active) return;
         setIsBuffering(false);
         if (realUrl) {
+          // Update the current song object with the real URL
           setCurrentSong(prev => ({ ...prev, url: realUrl }));
           return; 
         } else {
@@ -73,10 +73,13 @@ const App: React.FC = () => {
       }
 
       if (isPlaying && audioRef.current) {
-        audioRef.current.play().catch((e) => {
-          console.warn("Playback failed:", e);
-        });
-        setShowNotification(true);
+        // If the URL is already resolved, play
+        if (currentSong.url !== 'PENDING_YT_STREAM') {
+          audioRef.current.play().catch((e) => {
+            console.warn("Playback failed:", e);
+          });
+          setShowNotification(true);
+        }
       } else if (audioRef.current) {
         audioRef.current.pause();
       }
@@ -122,40 +125,19 @@ const App: React.FC = () => {
     setIsPlaying(true);
   };
 
-  const toggleFavorite = (song: Song) => {
-    const id = song.id;
-    if (favorites.includes(id)) {
-      setFavorites(prev => prev.filter(fid => fid !== id));
-    } else {
-      setFavorites(prev => [...prev, id]);
-      if (!localSongs.some(s => s.id === id)) {
-        setLocalSongs(prev => [song, ...prev]);
-      }
-    }
-  };
-
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
     setIsSearching(true);
 
-    const localMatches = localSongs.filter(s => 
-      s.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-      s.artist.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-
-    let finalResults = [...localMatches];
-
+    // Only keeping YouTube logic prioritized
     if (youtubeApiKey) {
       const ytResults = await searchYouTube(searchQuery, youtubeApiKey);
-      finalResults = [...finalResults, ...ytResults];
+      setSearchResults(ytResults);
     } else {
       const onlineResults = await searchOnlineSongs(searchQuery);
-      finalResults = [...finalResults, ...onlineResults];
+      setSearchResults(onlineResults);
     }
-
-    const uniqueResults = Array.from(new Map(finalResults.map(s => [s.id, s])).values());
-    setSearchResults(uniqueResults);
     setIsSearching(false);
   };
 
@@ -181,28 +163,20 @@ const App: React.FC = () => {
     }
   };
 
-  const updateProfilePhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const url = URL.createObjectURL(file);
-      setUser(prev => ({ ...prev, photo: url }));
-    }
-  };
-
   const toggleBluetooth = () => {
-    setBluetoothDevice(prev => prev ? null : "JBL Flip 6 (Connected)");
+    setBluetoothDevice(prev => prev ? null : "Bluetooth Speaker (Connected)");
   };
 
   return (
     <div className="relative h-screen w-full bg-black overflow-hidden flex flex-col text-white">
       <audio 
         ref={audioRef} 
-        src={currentSong.url} 
+        src={currentSong.url === 'PENDING_YT_STREAM' ? '' : currentSong.url} 
         onTimeUpdate={handleProgress} 
         onEnded={handleNext}
         onError={() => {
-          if (currentSong.url !== 'PENDING_YT_STREAM') {
-            console.error("Audio failed to load");
+          if (currentSong.url !== 'PENDING_YT_STREAM' && currentSong.url !== '') {
+            console.error("Audio failed to load:", currentSong.url);
           }
         }}
       />
@@ -247,7 +221,6 @@ const App: React.FC = () => {
               </div>
               <div className="flex gap-3">
                 <button className="p-3 glass rounded-full" onClick={() => setCurrentTab(Tab.Search)}><Search size={20} /></button>
-                <button className="p-3 glass rounded-full"><Heart size={20} /></button>
               </div>
             </header>
 
@@ -271,7 +244,6 @@ const App: React.FC = () => {
                     <button className="bg-black text-white p-3 rounded-full hover:scale-105 transition shadow-xl" onClick={() => { setCurrentSong(MOCK_SONGS[0]); setIsPlaying(true); }}>
                       <Play size={20} fill="currentColor" />
                     </button>
-                    <Heart size={20} />
                     <Download size={20} />
                     <MoreVertical size={20} />
                   </div>
@@ -285,7 +257,6 @@ const App: React.FC = () => {
                   </div>
                    <div className="relative z-10 flex gap-4 items-center">
                     <button className="bg-black text-white p-3 rounded-full"><Play size={20} fill="currentColor" /></button>
-                    <Heart size={20} />
                     <MoreVertical size={20} />
                   </div>
                   <img src="https://picsum.photos/seed/playlist2/300/300" className="absolute -right-10 -bottom-10 w-48 h-48 rounded-full object-cover opacity-90" />
@@ -295,7 +266,7 @@ const App: React.FC = () => {
 
             <section>
               <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-bold">Top daily playlists</h2>
+                <h2 className="text-xl font-bold">Top daily tracks</h2>
                 <button className="text-sm text-gray-400 hover:text-white transition">See all</button>
               </div>
               <div className="space-y-4">
@@ -309,7 +280,7 @@ const App: React.FC = () => {
                     </div>
                     <div className="ml-4 flex-1">
                       <h4 className="font-bold">{song.title}</h4>
-                      <p className="text-sm text-gray-400">By {song.artist} • {Math.floor(song.duration / 60)}:{(song.duration % 60).toString().padStart(2, '0')}</p>
+                      <p className="text-sm text-gray-400">By {song.artist}</p>
                     </div>
                     <button className="p-2 text-gray-400 hover:text-white"><MoreVertical size={20} /></button>
                   </div>
@@ -322,33 +293,14 @@ const App: React.FC = () => {
         {currentTab === Tab.Playlists && (
           <div className="p-6">
             <header className="flex justify-between items-center mb-8">
-              <h1 className="text-3xl font-bold">Your Playlists</h1>
+              <h1 className="text-3xl font-bold">Your Library</h1>
               <label className="flex items-center gap-2 glass px-4 py-2 rounded-full cursor-pointer hover:bg-white/10 transition">
                 <Download size={18} />
-                <span className="text-sm font-medium">Import Songs</span>
+                <span className="text-sm font-medium">Import</span>
                 <input type="file" multiple accept="audio/*" className="hidden" onChange={importSongs} />
               </label>
             </header>
             
-            <div className="grid grid-cols-2 gap-4 mb-10">
-              <div className="h-40 glass rounded-3xl p-4 flex flex-col justify-end relative overflow-hidden group">
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent z-10" />
-                <img src="https://picsum.photos/seed/fav/300/300" className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:scale-110 transition" />
-                <div className="relative z-20">
-                  <h3 className="font-bold">Liked Songs</h3>
-                  <p className="text-xs text-gray-400">{favorites.length} songs</p>
-                </div>
-              </div>
-              <div className="h-40 glass rounded-3xl p-4 flex flex-col justify-end relative overflow-hidden group">
-                 <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent z-10" />
-                <img src="https://picsum.photos/seed/recent/300/300" className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:scale-110 transition" />
-                <div className="relative z-20">
-                  <h3 className="font-bold">Recently Played</h3>
-                  <p className="text-xs text-gray-400">12 songs</p>
-                </div>
-              </div>
-            </div>
-
             <div className="space-y-2">
               <h2 className="text-lg font-bold mb-4">All Tracks</h2>
               {localSongs.map(song => (
@@ -358,8 +310,8 @@ const App: React.FC = () => {
                     <h4 className="font-medium text-sm">{song.title}</h4>
                     <p className="text-xs text-gray-400">{song.artist}</p>
                   </div>
-                  <button className={`p-2 transition ${favorites.includes(song.id) ? 'text-red-500' : 'text-gray-500 hover:text-white'}`} onClick={(e) => { e.stopPropagation(); toggleFavorite(song); }}>
-                    <Heart size={18} fill={favorites.includes(song.id) ? 'currentColor' : 'none'} />
+                  <button className="p-2 text-gray-400 hover:text-white">
+                    <MoreVertical size={18} />
                   </button>
                 </div>
               ))}
@@ -399,38 +351,23 @@ const App: React.FC = () => {
                     <div key={song.id} className="flex items-center p-3 glass rounded-2xl mb-3 animate-slide-up hover:bg-white/5 cursor-pointer" onClick={() => { setCurrentSong(song); setIsPlaying(true); }}>
                       <img src={song.cover} className="w-14 h-14 rounded-xl object-cover" />
                       <div className="ml-4 flex-1">
-                        <h4 className="font-bold truncate max-w-[180px]">{song.title}</h4>
-                        <p className="text-sm text-gray-400 truncate max-w-[180px]">
+                        <h4 className="font-bold truncate max-w-[200px]">{song.title}</h4>
+                        <p className="text-sm text-gray-400 truncate">
                           {song.artist} 
                           {song.id.startsWith('yt-') && <span className="text-[10px] bg-red-600 text-white px-1.5 rounded ml-1">YT</span>}
                         </p>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <button 
-                          className={`p-3 rounded-full transition ${favorites.includes(song.id) ? 'text-red-500 scale-110' : 'text-gray-400 hover:text-white'}`}
-                          onClick={(e) => { e.stopPropagation(); toggleFavorite(song); }}
-                        >
-                          <Heart size={20} fill={favorites.includes(song.id) ? 'currentColor' : 'none'} />
-                        </button>
-                        <Play size={20} className="text-lime-400 mr-2" fill="currentColor" />
-                      </div>
+                      <Play size={20} className="text-lime-400 mr-2" fill="currentColor" />
                     </div>
                   ))}
                 </div>
               ) : (
                 <>
-                  {isSearching && <p className="text-center text-gray-500 animate-pulse">Searching the cosmos...</p>}
+                  {isSearching && <p className="text-center text-gray-500 animate-pulse mt-10">Resolving cosmic frequencies...</p>}
                   {!isSearching && (
-                    <div>
-                      <h2 className="text-lg font-bold mb-4">Top Genres</h2>
-                      <div className="grid grid-cols-2 gap-4">
-                        {['Pop', 'Lofi', 'Jazz', 'Electronic'].map((genre, i) => (
-                          <div key={genre} className={`h-24 rounded-2xl p-4 flex items-center justify-center font-bold text-xl relative overflow-hidden cursor-pointer`}>
-                            <img src={`https://picsum.photos/seed/genre${i}/300/300`} className="absolute inset-0 w-full h-full object-cover opacity-40" />
-                            <span className="relative z-10">{genre}</span>
-                          </div>
-                        ))}
-                      </div>
+                    <div className="text-center text-gray-500 mt-20 opacity-50">
+                       <Youtube size={48} className="mx-auto mb-4" />
+                       <p>Search for any track on YouTube</p>
                     </div>
                   )}
                 </>
@@ -449,10 +386,6 @@ const App: React.FC = () => {
                 <div>
                   <h2 className="text-xl font-bold">{user.name}</h2>
                   <p className="text-gray-400 mb-2">satveer.harmony@music.com</p>
-                  <label className="text-xs bg-white text-black font-bold px-3 py-1.5 rounded-full cursor-pointer hover:bg-gray-200 transition">
-                    CHANGE PHOTO
-                    <input type="file" className="hidden" onChange={updateProfilePhoto} accept="image/*" />
-                  </label>
                 </div>
               </div>
 
@@ -471,7 +404,7 @@ const App: React.FC = () => {
                       onChange={(e) => saveYoutubeKey(e.target.value)}
                     />
                   </div>
-                  <p className="text-[10px] text-gray-500 mt-2">Allows searching real videos from YouTube.</p>
+                  <p className="text-[10px] text-gray-500 mt-2">Required for searching tracks from YouTube.</p>
                 </div>
 
                 <div>
@@ -486,16 +419,6 @@ const App: React.FC = () => {
                         {q}
                       </button>
                     ))}
-                  </div>
-                </div>
-
-                <div className="flex justify-between items-center py-4 border-t border-white/5">
-                  <div>
-                    <h3 className="font-bold">Offline Mode</h3>
-                    <p className="text-xs text-gray-400">Save data by playing only local music</p>
-                  </div>
-                  <div className="w-12 h-6 bg-gray-800 rounded-full relative p-1 cursor-pointer">
-                    <div className="w-4 h-4 bg-gray-500 rounded-full" />
                   </div>
                 </div>
               </div>
@@ -515,7 +438,7 @@ const App: React.FC = () => {
           <button onClick={() => setIsPlayerOpen(false)} className="p-2 glass rounded-full"><X size={20} /></button>
           <div className="text-center">
             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400 mb-1">Now Playing</p>
-            <h4 className="text-xs font-bold text-gray-300">{currentSong.album}</h4>
+            <h4 className="text-xs font-bold text-gray-300 truncate max-w-[150px]">{currentSong.album}</h4>
           </div>
           <button className="p-2 glass rounded-full"><MoreVertical size={20} /></button>
         </header>
@@ -534,9 +457,9 @@ const App: React.FC = () => {
             )}
           </div>
 
-          <div className="w-full text-center mb-10">
-            <h2 className="text-3xl font-bold mb-2 text-shadow">{currentSong.title}</h2>
-            <p className="text-lg text-gray-400">{currentSong.artist}</p>
+          <div className="w-full text-center mb-10 px-4">
+            <h2 className="text-3xl font-bold mb-2 text-shadow truncate">{currentSong.title}</h2>
+            <p className="text-lg text-gray-400 truncate">{currentSong.artist}</p>
           </div>
 
           <div className="w-full max-w-md px-4 mb-8">
@@ -567,7 +490,7 @@ const App: React.FC = () => {
 
           <div className="w-full max-w-md glass rounded-3xl p-4 mb-8">
             <div className="flex justify-between items-center mb-4 px-2">
-              <h3 className="font-bold text-sm">Up Next</h3>
+              <h3 className="font-bold text-sm">Now Playing Details</h3>
               <button className="text-[10px] font-bold text-lime-400 uppercase tracking-wider" onClick={() => setShowLyrics(!showLyrics)}>
                 {showLyrics ? 'Hide Lyrics' : 'View Lyrics'}
               </button>
@@ -580,17 +503,8 @@ const App: React.FC = () => {
                   </p>
                </div>
             ) : (
-              <div className="space-y-3 max-h-40 overflow-y-auto no-scrollbar">
-                {localSongs.slice(1, 4).map(song => (
-                  <div key={song.id} className="flex items-center p-2 rounded-2xl hover:bg-white/5 cursor-pointer" onClick={() => { setCurrentSong(song); setIsPlaying(true); }}>
-                    <img src={song.cover} className="w-10 h-10 rounded-lg object-cover" />
-                    <div className="ml-3 flex-1">
-                      <h4 className="text-sm font-bold truncate">{song.title}</h4>
-                      <p className="text-[10px] text-gray-400">{song.artist}</p>
-                    </div>
-                    <Download size={16} className="text-gray-500" />
-                  </div>
-                ))}
+              <div className="p-4 text-center opacity-50 text-xs">
+                 Streaming via YouTube audio bridge. Use settings to update API key.
               </div>
             )}
           </div>
