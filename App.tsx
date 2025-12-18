@@ -6,43 +6,40 @@ import { MOCK_SONGS, CATEGORIES, BACKGROUND_IMAGE } from './constants';
 import { searchOnlineSongs, fetchLyrics, searchYouTube, getYoutubeStreamUrl } from './geminiService';
 
 const App: React.FC = () => {
-  // Global State
+  // Navigation & State
   const [currentTab, setCurrentTab] = useState<Tab>(Tab.Home);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSong, setCurrentSong] = useState<Song>(MOCK_SONGS[0]);
   const [isPlayerOpen, setIsPlayerOpen] = useState(false);
   const [progress, setProgress] = useState(0);
   const [localSongs, setLocalSongs] = useState<Song[]>(MOCK_SONGS);
+  
+  // Search & Settings
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Song[]>([]);
-  const [user, setUser] = useState<UserProfile>({
-    name: "Satveer",
-    photo: "https://picsum.photos/seed/satveer/200/200"
-  });
-  const [quality, setQuality] = useState<MusicQuality>('High');
+  const [isSearching, setIsSearching] = useState(false);
+  const [youtubeApiKey, setYoutubeApiKey] = useState<string>(localStorage.getItem('yt_api_key') || '');
+  
+  // Player Features
   const [showLyrics, setShowLyrics] = useState(false);
   const [lyrics, setLyrics] = useState<string>('');
-  const [bluetoothDevice, setBluetoothDevice] = useState<string | null>(null);
-  const [showNotification, setShowNotification] = useState(false);
-  const [youtubeApiKey, setYoutubeApiKey] = useState<string>(localStorage.getItem('yt_api_key') || '');
-  const [isSearching, setIsSearching] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
-
-  // Audio Ref
+  const [quality, setQuality] = useState<MusicQuality>('High');
+  // Fix: Added missing bluetoothDevice state
+  const [bluetoothDevice, setBluetoothDevice] = useState<string | null>(null);
+  
+  // Ref for Audio element
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Initialize Media Session for background control
+  // Sync Media Session (Lock Screen Controls)
   useEffect(() => {
     if ('mediaSession' in navigator && currentSong) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentSong.title,
         artist: currentSong.artist,
         album: currentSong.album,
-        artwork: [
-          { src: currentSong.cover, sizes: '512x512', type: 'image/png' }
-        ]
+        artwork: [{ src: currentSong.cover, sizes: '512x512', type: 'image/png' }]
       });
-
       navigator.mediaSession.setActionHandler('play', () => setIsPlaying(true));
       navigator.mediaSession.setActionHandler('pause', () => setIsPlaying(false));
       navigator.mediaSession.setActionHandler('previoustrack', handlePrev);
@@ -50,45 +47,55 @@ const App: React.FC = () => {
     }
   }, [currentSong]);
 
-  // Combined Effect for Playback and Stream Resolution
+  /**
+   * Core Playback Logic
+   * Handles stream resolution for YouTube songs and syncing the audio element.
+   */
   useEffect(() => {
-    let active = true;
-    const handlePlayback = async () => {
-      // Resolve YouTube Stream if necessary
+    let cancelled = false;
+
+    const syncPlayback = async () => {
+      if (!audioRef.current) return;
+
+      // Check if we need to resolve a YouTube stream
       if (currentSong.id.startsWith('yt-') && currentSong.url === 'PENDING_YT_STREAM') {
         setIsBuffering(true);
         const videoId = currentSong.id.replace('yt-', '');
-        const realUrl = await getYoutubeStreamUrl(videoId);
-        if (!active) return;
+        const resolvedUrl = await getYoutubeStreamUrl(videoId);
+        
+        if (cancelled) return;
         setIsBuffering(false);
-        if (realUrl) {
-          // Update the current song object with the real URL
-          setCurrentSong(prev => ({ ...prev, url: realUrl }));
-          return; 
+
+        if (resolvedUrl) {
+          // Update the song object with real URL. This triggers the effect again.
+          setCurrentSong(prev => ({ ...prev, url: resolvedUrl }));
+          return;
         } else {
-          console.error("Failed to resolve stream for", videoId);
+          alert("Could not load YouTube audio stream. Please try another track.");
           setIsPlaying(false);
           return;
         }
       }
 
-      if (isPlaying && audioRef.current) {
-        // If the URL is already resolved, play
-        if (currentSong.url !== 'PENDING_YT_STREAM') {
-          audioRef.current.play().catch((e) => {
-            console.warn("Playback failed:", e);
+      // Final Play/Pause sync
+      if (isPlaying) {
+        // Only try to play if we have a valid playable URL
+        if (currentSong.url && currentSong.url !== 'PENDING_YT_STREAM') {
+          audioRef.current.play().catch(err => {
+            console.warn("Autoplay/Play prevented:", err);
+            setIsPlaying(false);
           });
-          setShowNotification(true);
         }
-      } else if (audioRef.current) {
+      } else {
         audioRef.current.pause();
       }
     };
 
-    handlePlayback();
-    return () => { active = false; };
+    syncPlayback();
+    return () => { cancelled = true; };
   }, [isPlaying, currentSong.id, currentSong.url]);
 
+  // Fetch Lyrics when requested
   useEffect(() => {
     if (showLyrics && currentSong) {
       setLyrics("Loading lyrics...");
@@ -96,7 +103,7 @@ const App: React.FC = () => {
     }
   }, [showLyrics, currentSong.id]);
 
-  const handleProgress = () => {
+  const handleProgressUpdate = () => {
     if (audioRef.current) {
       const p = (audioRef.current.currentTime / audioRef.current.duration) * 100;
       setProgress(p || 0);
@@ -104,24 +111,24 @@ const App: React.FC = () => {
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const p = parseFloat(e.target.value);
+    const val = parseFloat(e.target.value);
     if (audioRef.current) {
-      audioRef.current.currentTime = (p / 100) * audioRef.current.duration;
-      setProgress(p);
+      audioRef.current.currentTime = (val / 100) * audioRef.current.duration;
+      setProgress(val);
     }
   };
 
   const handleNext = () => {
-    const currentIndex = localSongs.findIndex(s => s.id === currentSong.id);
-    const nextIndex = (currentIndex + 1) % localSongs.length;
-    setCurrentSong(localSongs[nextIndex]);
+    const index = localSongs.findIndex(s => s.id === currentSong.id);
+    const nextSong = localSongs[(index + 1) % localSongs.length];
+    setCurrentSong(nextSong);
     setIsPlaying(true);
   };
 
   const handlePrev = () => {
-    const currentIndex = localSongs.findIndex(s => s.id === currentSong.id);
-    const prevIndex = (currentIndex - 1 + localSongs.length) % localSongs.length;
-    setCurrentSong(localSongs[prevIndex]);
+    const index = localSongs.findIndex(s => s.id === currentSong.id);
+    const prevSong = localSongs[(index - 1 + localSongs.length) % localSongs.length];
+    setCurrentSong(prevSong);
     setIsPlaying(true);
   };
 
@@ -130,13 +137,12 @@ const App: React.FC = () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
 
-    // Only keeping YouTube logic prioritized
     if (youtubeApiKey) {
-      const ytResults = await searchYouTube(searchQuery, youtubeApiKey);
-      setSearchResults(ytResults);
+      const results = await searchYouTube(searchQuery, youtubeApiKey);
+      setSearchResults(results);
     } else {
-      const onlineResults = await searchOnlineSongs(searchQuery);
-      setSearchResults(onlineResults);
+      const results = await searchOnlineSongs(searchQuery);
+      setSearchResults(results);
     }
     setIsSearching(false);
   };
@@ -146,14 +152,15 @@ const App: React.FC = () => {
     localStorage.setItem('yt_api_key', key);
   };
 
-  const importSongs = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const importFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files) {
+      // Fix: Explicitly typed 'file' as File to resolve unknown type errors on lines 158 and 162
       const newSongs: Song[] = Array.from(files).map((file: File, idx) => ({
         id: `local-${Date.now()}-${idx}`,
         title: file.name.replace(/\.[^/.]+$/, ""),
         artist: "Imported Artist",
-        album: "My Imports",
+        album: "Local Upload",
         cover: `https://picsum.photos/seed/${idx}/400/400`,
         url: URL.createObjectURL(file),
         duration: 0,
@@ -163,126 +170,92 @@ const App: React.FC = () => {
     }
   };
 
-  const toggleBluetooth = () => {
-    setBluetoothDevice(prev => prev ? null : "Bluetooth Speaker (Connected)");
-  };
-
   return (
     <div className="relative h-screen w-full bg-black overflow-hidden flex flex-col text-white">
+      {/* Invisible Audio Engine */}
       <audio 
         ref={audioRef} 
         src={currentSong.url === 'PENDING_YT_STREAM' ? '' : currentSong.url} 
-        onTimeUpdate={handleProgress} 
+        onTimeUpdate={handleProgressUpdate} 
         onEnded={handleNext}
-        onError={() => {
-          if (currentSong.url !== 'PENDING_YT_STREAM' && currentSong.url !== '') {
-            console.error("Audio failed to load:", currentSong.url);
-          }
-        }}
       />
 
+      {/* Dynamic Immersive Background */}
       <div 
         className="fixed inset-0 z-0 transition-opacity duration-700"
         style={{ 
           backgroundImage: `url(${BACKGROUND_IMAGE})`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
-          opacity: isPlayerOpen ? 0.4 : 0.1
+          opacity: isPlayerOpen ? 0.3 : 0.08
         }}
       />
 
-      {showNotification && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-80 bg-white rounded-2xl shadow-2xl flex items-center p-3 animate-bounce-in text-black">
-          <img src={currentSong.cover} className="w-12 h-12 rounded-full object-cover shadow-lg" />
-          <div className="ml-3 flex-1 overflow-hidden">
-            <h4 className="font-bold text-sm truncate">{currentSong.title}</h4>
-            <p className="text-xs text-gray-500 truncate">{currentSong.artist}</p>
-          </div>
-          <div className="flex gap-2 text-gray-700">
-            <button onClick={() => setIsPlaying(!isPlaying)} className="hover:text-black">
-              {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
-            </button>
-            <button onClick={handleNext} className="hover:text-black"><SkipForward size={18} fill="currentColor" /></button>
-            <button onClick={() => setShowNotification(false)} className="text-gray-400"><X size={16} /></button>
-          </div>
-        </div>
-      )}
-
-      <div className="relative z-10 flex-1 flex flex-col overflow-y-auto pb-24">
+      {/* Main UI Layer */}
+      <div className="relative z-10 flex-1 flex flex-col overflow-y-auto pb-32 no-scrollbar">
+        
+        {/* TAB: HOME */}
         {currentTab === Tab.Home && (
-          <div className="p-6">
+          <div className="p-6 animate-fade-in">
             <header className="flex justify-between items-center mb-8">
               <div className="flex items-center gap-4">
-                <div className="relative">
-                  <img src={user.photo} className="w-12 h-12 rounded-full object-cover border-2 border-white/20" />
-                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-black rounded-full" />
-                </div>
-                <h1 className="text-3xl font-bold">Hi, {user.name}</h1>
+                <img src="https://picsum.photos/seed/satveer/200/200" className="w-12 h-12 rounded-full border-2 border-white/20" />
+                <h1 className="text-3xl font-bold">Harmony</h1>
               </div>
-              <div className="flex gap-3">
-                <button className="p-3 glass rounded-full" onClick={() => setCurrentTab(Tab.Search)}><Search size={20} /></button>
-              </div>
+              <button className="p-3 glass rounded-full" onClick={() => setCurrentTab(Tab.Search)}><Search size={20} /></button>
             </header>
 
             <div className="flex gap-3 mb-8 overflow-x-auto no-scrollbar">
               {CATEGORIES.map(cat => (
-                <button key={cat} className={`px-6 py-2 rounded-full font-medium transition ${cat === 'All' ? 'bg-[#D6F044] text-black' : 'glass text-gray-400'}`}>
+                <button key={cat} className={`px-6 py-2 rounded-full font-medium transition whitespace-nowrap ${cat === 'All' ? 'bg-[#D6F044] text-black' : 'glass text-gray-400'}`}>
                   {cat}
                 </button>
               ))}
             </div>
 
             <section className="mb-10">
-              <h2 className="text-xl font-bold mb-4">Curated & trending</h2>
+              <h2 className="text-xl font-bold mb-4">Curated for you</h2>
               <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar">
-                <div className="min-w-[300px] h-48 bg-purple-300 rounded-3xl p-6 flex flex-col justify-between text-black relative overflow-hidden group">
+                <div className="min-w-[280px] h-44 bg-indigo-500/40 rounded-3xl p-6 flex flex-col justify-between relative overflow-hidden group glass">
                   <div className="relative z-10">
-                    <h3 className="text-2xl font-bold mb-2">Discover weekly</h3>
-                    <p className="text-sm opacity-80 max-w-[150px]">The original slow instrumental best playlists.</p>
+                    <h3 className="text-2xl font-bold">Chill Vibes</h3>
+                    <p className="text-sm opacity-70">Smooth morning instrumentals.</p>
                   </div>
-                  <div className="relative z-10 flex gap-4 items-center mt-4">
-                    <button className="bg-black text-white p-3 rounded-full hover:scale-105 transition shadow-xl" onClick={() => { setCurrentSong(MOCK_SONGS[0]); setIsPlaying(true); }}>
-                      <Play size={20} fill="currentColor" />
-                    </button>
-                    <Download size={20} />
-                    <MoreVertical size={20} />
-                  </div>
-                  <img src="https://picsum.photos/seed/playlist1/300/300" className="absolute -right-10 -bottom-10 w-48 h-48 rounded-full object-cover transform group-hover:scale-110 transition duration-500 opacity-90" />
+                  <button onClick={() => { setCurrentSong(MOCK_SONGS[0]); setIsPlaying(true); }} className="relative z-10 bg-white text-black p-3 w-12 h-12 rounded-full shadow-lg">
+                    <Play size={24} fill="currentColor" />
+                  </button>
+                  <img src="https://picsum.photos/seed/chill/400/400" className="absolute -right-10 -bottom-10 w-40 h-40 rounded-full opacity-40 group-hover:scale-110 transition" />
                 </div>
                 
-                <div className="min-w-[300px] h-48 bg-lime-300 rounded-3xl p-6 flex flex-col justify-between text-black relative overflow-hidden">
-                   <div className="relative z-10">
-                    <h3 className="text-2xl font-bold mb-2">Release Radar</h3>
-                    <p className="text-sm opacity-80 max-w-[150px]">Fresh tunes from your favorite artists.</p>
+                <div className="min-w-[280px] h-44 bg-lime-500/40 rounded-3xl p-6 flex flex-col justify-between relative overflow-hidden group glass">
+                  <div className="relative z-10">
+                    <h3 className="text-2xl font-bold">Top Hits</h3>
+                    <p className="text-sm opacity-70">Chart topping melodies.</p>
                   </div>
-                   <div className="relative z-10 flex gap-4 items-center">
-                    <button className="bg-black text-white p-3 rounded-full"><Play size={20} fill="currentColor" /></button>
-                    <MoreVertical size={20} />
-                  </div>
-                  <img src="https://picsum.photos/seed/playlist2/300/300" className="absolute -right-10 -bottom-10 w-48 h-48 rounded-full object-cover opacity-90" />
+                  <button onClick={() => { setCurrentSong(MOCK_SONGS[1]); setIsPlaying(true); }} className="relative z-10 bg-white text-black p-3 w-12 h-12 rounded-full shadow-lg">
+                    <Play size={24} fill="currentColor" />
+                  </button>
+                  <img src="https://picsum.photos/seed/hits/400/400" className="absolute -right-10 -bottom-10 w-40 h-40 rounded-full opacity-40 group-hover:scale-110 transition" />
                 </div>
               </div>
             </section>
 
             <section>
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-bold">Top daily tracks</h2>
-                <button className="text-sm text-gray-400 hover:text-white transition">See all</button>
-              </div>
+              <h2 className="text-xl font-bold mb-4">Daily tracks</h2>
               <div className="space-y-4">
-                {localSongs.slice(0, 4).map(song => (
-                  <div key={song.id} className="flex items-center group cursor-pointer" onClick={() => { setCurrentSong(song); setIsPlaying(true); }}>
-                    <div className="relative w-16 h-16 rounded-2xl overflow-hidden shadow-lg">
-                      <img src={song.cover} className="w-full h-full object-cover group-hover:scale-110 transition duration-300" />
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition">
-                         <Play size={20} fill="currentColor" />
+                {localSongs.slice(0, 5).map(song => (
+                  <div key={song.id} className="flex items-center p-2 rounded-2xl hover:bg-white/5 cursor-pointer group" onClick={() => { setCurrentSong(song); setIsPlaying(true); }}>
+                    <div className="relative w-14 h-14 rounded-xl overflow-hidden mr-4">
+                      <img src={song.cover} className="w-full h-full object-cover" />
+                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
+                        <Play size={18} fill="currentColor" />
                       </div>
                     </div>
-                    <div className="ml-4 flex-1">
-                      <h4 className="font-bold">{song.title}</h4>
-                      <p className="text-sm text-gray-400">By {song.artist}</p>
+                    <div className="flex-1">
+                      <h4 className="font-bold truncate">{song.title}</h4>
+                      <p className="text-xs text-gray-400">{song.artist}</p>
                     </div>
-                    <button className="p-2 text-gray-400 hover:text-white"><MoreVertical size={20} /></button>
+                    <button className="p-2 text-gray-500"><MoreVertical size={20} /></button>
                   </div>
                 ))}
               </div>
@@ -290,44 +263,16 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {currentTab === Tab.Playlists && (
-          <div className="p-6">
-            <header className="flex justify-between items-center mb-8">
-              <h1 className="text-3xl font-bold">Your Library</h1>
-              <label className="flex items-center gap-2 glass px-4 py-2 rounded-full cursor-pointer hover:bg-white/10 transition">
-                <Download size={18} />
-                <span className="text-sm font-medium">Import</span>
-                <input type="file" multiple accept="audio/*" className="hidden" onChange={importSongs} />
-              </label>
-            </header>
-            
-            <div className="space-y-2">
-              <h2 className="text-lg font-bold mb-4">All Tracks</h2>
-              {localSongs.map(song => (
-                <div key={song.id} className="flex items-center p-2 rounded-2xl hover:bg-white/5 group" onClick={() => { setCurrentSong(song); setIsPlaying(true); }}>
-                  <img src={song.cover} className="w-12 h-12 rounded-xl object-cover" />
-                  <div className="ml-4 flex-1">
-                    <h4 className="font-medium text-sm">{song.title}</h4>
-                    <p className="text-xs text-gray-400">{song.artist}</p>
-                  </div>
-                  <button className="p-2 text-gray-400 hover:text-white">
-                    <MoreVertical size={18} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
+        {/* TAB: SEARCH (YouTube Integrated) */}
         {currentTab === Tab.Search && (
-          <div className="p-6">
+          <div className="p-6 animate-fade-in">
             <h1 className="text-3xl font-bold mb-8">Search</h1>
             <form onSubmit={handleSearch} className="relative mb-8 flex gap-2">
               <div className="relative flex-1">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                 <input 
                   type="text" 
-                  placeholder="Artists, songs, or lyrics" 
+                  placeholder="Songs, artists, or YouTube link" 
                   className="w-full glass py-4 pl-12 pr-6 rounded-2xl outline-none focus:ring-2 ring-lime-400 transition"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -336,219 +281,241 @@ const App: React.FC = () => {
               <button 
                 type="submit" 
                 disabled={isSearching}
-                className={`px-6 py-4 glass rounded-2xl hover:bg-white/10 transition flex items-center gap-2 ${isSearching ? 'opacity-50' : ''}`}
+                className="px-6 py-4 glass rounded-2xl flex items-center gap-2 hover:bg-white/10 active:scale-95 transition"
               >
                 {youtubeApiKey ? <Youtube size={20} className="text-red-500" /> : <Search size={20} />}
-                <span className="font-bold text-sm">GO</span>
+                <span className="font-bold">GO</span>
               </button>
             </form>
 
-            <div className="space-y-6">
-              {searchResults.length > 0 ? (
-                <div>
-                  <h2 className="text-lg font-bold mb-4">Results</h2>
-                  {searchResults.map(song => (
-                    <div key={song.id} className="flex items-center p-3 glass rounded-2xl mb-3 animate-slide-up hover:bg-white/5 cursor-pointer" onClick={() => { setCurrentSong(song); setIsPlaying(true); }}>
-                      <img src={song.cover} className="w-14 h-14 rounded-xl object-cover" />
-                      <div className="ml-4 flex-1">
-                        <h4 className="font-bold truncate max-w-[200px]">{song.title}</h4>
-                        <p className="text-sm text-gray-400 truncate">
-                          {song.artist} 
-                          {song.id.startsWith('yt-') && <span className="text-[10px] bg-red-600 text-white px-1.5 rounded ml-1">YT</span>}
-                        </p>
-                      </div>
-                      <Play size={20} className="text-lime-400 mr-2" fill="currentColor" />
+            <div className="space-y-4">
+              {isSearching ? (
+                <p className="text-center text-gray-500 animate-pulse mt-10">Searching the global cloud...</p>
+              ) : searchResults.length > 0 ? (
+                searchResults.map(song => (
+                  <div key={song.id} className="flex items-center p-3 glass rounded-2xl hover:bg-white/10 cursor-pointer animate-slide-up" onClick={() => { setCurrentSong(song); setIsPlaying(true); }}>
+                    <img src={song.cover} className="w-14 h-14 rounded-xl object-cover mr-4" />
+                    <div className="flex-1 overflow-hidden">
+                      <h4 className="font-bold truncate">{song.title}</h4>
+                      <p className="text-xs text-gray-400 truncate">
+                        {song.artist} {song.id.startsWith('yt-') && <span className="bg-red-600 text-[8px] font-bold px-1.5 py-0.5 rounded ml-1">YT</span>}
+                      </p>
                     </div>
-                  ))}
-                </div>
+                    <Play size={20} className="text-lime-400" fill="currentColor" />
+                  </div>
+                ))
               ) : (
-                <>
-                  {isSearching && <p className="text-center text-gray-500 animate-pulse mt-10">Resolving cosmic frequencies...</p>}
-                  {!isSearching && (
-                    <div className="text-center text-gray-500 mt-20 opacity-50">
-                       <Youtube size={48} className="mx-auto mb-4" />
-                       <p>Search for any track on YouTube</p>
-                    </div>
-                  )}
-                </>
+                <div className="text-center text-gray-500 mt-20 opacity-30">
+                  <Youtube size={64} className="mx-auto mb-4" />
+                  <p>Search YouTube or enter a key in Settings</p>
+                </div>
               )}
             </div>
           </div>
         )}
 
+        {/* TAB: LIBRARY (Playlists) */}
+        {currentTab === Tab.Playlists && (
+          <div className="p-6 animate-fade-in">
+            <header className="flex justify-between items-center mb-8">
+              <h1 className="text-3xl font-bold">Library</h1>
+              <label className="p-3 glass rounded-full cursor-pointer hover:bg-white/10 active:scale-95 transition">
+                <Download size={20} />
+                <input type="file" multiple accept="audio/*" className="hidden" onChange={importFiles} />
+              </label>
+            </header>
+            
+            <div className="space-y-4">
+              {localSongs.map(song => (
+                <div key={song.id} className="flex items-center p-2 rounded-2xl hover:bg-white/5 cursor-pointer" onClick={() => { setCurrentSong(song); setIsPlaying(true); }}>
+                  <img src={song.cover} className="w-12 h-12 rounded-xl object-cover mr-4" />
+                  <div className="flex-1">
+                    <h4 className="font-medium text-sm">{song.title}</h4>
+                    <p className="text-[10px] text-gray-400 uppercase tracking-wider">{song.album}</p>
+                  </div>
+                  <MoreVertical size={18} className="text-gray-500" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TAB: SETTINGS */}
         {currentTab === Tab.Settings && (
-          <div className="p-6">
+          <div className="p-6 animate-fade-in">
             <h1 className="text-3xl font-bold mb-8">Settings</h1>
             
-            <div className="glass rounded-3xl p-6 mb-6">
-              <div className="flex items-center gap-6 mb-6">
-                <img src={user.photo} className="w-20 h-20 rounded-full object-cover border-4 border-white/10" />
-                <div>
-                  <h2 className="text-xl font-bold">{user.name}</h2>
-                  <p className="text-gray-400 mb-2">satveer.harmony@music.com</p>
-                </div>
-              </div>
+            <div className="glass rounded-3xl p-6 space-y-8">
+              <section>
+                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                  <Youtube size={16} className="text-red-500" />
+                  YouTube Integration
+                </h3>
+                <input 
+                  type="password" 
+                  placeholder="Paste YouTube API Key" 
+                  className="w-full glass py-3 px-4 rounded-xl outline-none focus:ring-2 ring-red-500 transition text-sm"
+                  value={youtubeApiKey}
+                  onChange={(e) => saveYoutubeKey(e.target.value)}
+                />
+                <p className="text-[10px] text-gray-500 mt-2">Required for high-speed YouTube data fetching.</p>
+              </section>
 
-              <div className="space-y-6">
-                <div className="pt-4 border-t border-white/5">
-                  <h3 className="text-sm font-bold text-gray-500 mb-3 uppercase tracking-wider flex items-center gap-2">
-                    <Youtube size={16} className="text-red-500" />
-                    YouTube Integration
-                  </h3>
-                  <div className="relative">
-                    <input 
-                      type="password" 
-                      placeholder="Enter YouTube API Key" 
-                      className="w-full glass py-3 px-4 rounded-xl outline-none focus:ring-2 ring-red-500 transition text-sm"
-                      value={youtubeApiKey}
-                      onChange={(e) => saveYoutubeKey(e.target.value)}
-                    />
-                  </div>
-                  <p className="text-[10px] text-gray-500 mt-2">Required for searching tracks from YouTube.</p>
+              <section>
+                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Audio Quality</h3>
+                <div className="flex gap-2">
+                  {['Low', 'Med', 'High'].map(q => (
+                    <button 
+                      key={q} 
+                      onClick={() => setQuality(q as MusicQuality)}
+                      className={`flex-1 py-2 rounded-xl text-xs font-bold transition ${quality === q ? 'bg-lime-400 text-black' : 'glass text-gray-400'}`}
+                    >
+                      {q.toUpperCase()}
+                    </button>
+                  ))}
                 </div>
+              </section>
 
-                <div>
-                  <h3 className="text-sm font-bold text-gray-500 mb-3 uppercase tracking-wider">Music Quality</h3>
-                  <div className="flex gap-2">
-                    {['Low', 'Medium', 'High'].map(q => (
-                      <button 
-                        key={q} 
-                        onClick={() => setQuality(q as MusicQuality)}
-                        className={`flex-1 py-2 rounded-xl text-sm font-medium transition ${quality === q ? 'bg-lime-400 text-black' : 'glass text-gray-400'}`}
-                      >
-                        {q}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              <button className="w-full py-4 glass text-red-500 font-bold rounded-2xl hover:bg-red-500/10 active:scale-95 transition">
+                RESET APP
+              </button>
             </div>
-
-            <button className="w-full py-4 glass text-red-400 font-bold rounded-2xl hover:bg-red-500/10 transition">
-              LOG OUT
-            </button>
           </div>
         )}
       </div>
 
+      {/* FULL PLAYER OVERLAY */}
       <div 
-        className={`fixed inset-0 z-50 glass-dark transform transition-all duration-500 ease-out flex flex-col ${isPlayerOpen ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 z-50 glass-dark transform transition-all duration-500 ease-in-out flex flex-col ${isPlayerOpen ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0 pointer-events-none'}`}
       >
         <header className="p-6 flex justify-between items-center">
-          <button onClick={() => setIsPlayerOpen(false)} className="p-2 glass rounded-full"><X size={20} /></button>
-          <div className="text-center">
-            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400 mb-1">Now Playing</p>
-            <h4 className="text-xs font-bold text-gray-300 truncate max-w-[150px]">{currentSong.album}</h4>
+          <button onClick={() => setIsPlayerOpen(false)} className="p-2 glass rounded-full hover:bg-white/10 transition"><X size={20} /></button>
+          <div className="text-center flex-1 mx-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400 mb-1">Playing From {currentSong.album}</p>
           </div>
-          <button className="p-2 glass rounded-full"><MoreVertical size={20} /></button>
+          <button className="p-2 glass rounded-full hover:bg-white/10 transition"><MoreVertical size={20} /></button>
         </header>
 
-        <div className="flex-1 flex flex-col items-center justify-center p-8">
-          <div className="relative mb-12">
-            <div className={`w-72 h-72 rounded-full overflow-hidden border-8 border-white/5 shadow-2xl relative z-10 ${isPlaying ? 'animate-[spin_12s_linear_infinite]' : ''}`}>
+        <div className="flex-1 flex flex-col items-center justify-center p-8 max-w-xl mx-auto w-full">
+          {/* Cover Art */}
+          <div className="relative mb-12 w-full aspect-square max-w-[320px]">
+            <div className={`w-full h-full rounded-[40px] overflow-hidden border-4 border-white/5 shadow-2xl relative z-10 transition-transform duration-1000 ${isPlaying ? 'scale-105' : 'scale-95'}`}>
               <img src={currentSong.cover} className="w-full h-full object-cover" />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent" />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
             </div>
-            <div className="absolute inset-0 w-72 h-72 bg-white/20 blur-[80px] rounded-full -z-10" />
+            {/* Visualizer/Glow Effect */}
+            <div className="absolute inset-0 bg-white/20 blur-[80px] rounded-full -z-10 animate-pulse" />
+            
             {isBuffering && (
-              <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 rounded-full">
-                <div className="w-12 h-12 border-4 border-lime-400 border-t-transparent rounded-full animate-spin" />
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 rounded-[40px] backdrop-blur-sm">
+                <div className="w-16 h-16 border-4 border-lime-400 border-t-transparent rounded-full animate-spin" />
               </div>
             )}
           </div>
 
-          <div className="w-full text-center mb-10 px-4">
-            <h2 className="text-3xl font-bold mb-2 text-shadow truncate">{currentSong.title}</h2>
-            <p className="text-lg text-gray-400 truncate">{currentSong.artist}</p>
+          {/* Song Info */}
+          <div className="w-full text-center mb-10">
+            <h2 className="text-3xl font-bold mb-2 tracking-tight text-shadow">{currentSong.title}</h2>
+            <p className="text-lg text-gray-400 font-medium">{currentSong.artist}</p>
           </div>
 
-          <div className="w-full max-w-md px-4 mb-8">
+          {/* Progress Slider */}
+          <div className="w-full mb-10 px-2">
             <input 
               type="range" 
-              className="w-full h-1.5 bg-white/20 rounded-lg appearance-none cursor-pointer accent-lime-400 mb-2" 
+              className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-lime-400 transition" 
               value={progress}
               onChange={handleSeek}
             />
-            <div className="flex justify-between text-[10px] font-bold text-gray-400 tracking-widest uppercase">
+            <div className="flex justify-between text-[10px] font-black text-gray-500 tracking-[0.2em] mt-3 uppercase">
               <span>{Math.floor((audioRef.current?.currentTime || 0) / 60)}:{(Math.floor((audioRef.current?.currentTime || 0) % 60)).toString().padStart(2, '0')}</span>
               <span>{Math.floor((audioRef.current?.duration || 0) / 60)}:{(Math.floor((audioRef.current?.duration || 0) % 60)).toString().padStart(2, '0')}</span>
             </div>
           </div>
 
+          {/* Controls */}
           <div className="flex items-center gap-10 mb-12">
-            <button className="text-gray-400 hover:text-white transition"><Shuffle size={24} /></button>
-            <button className="text-white active:scale-90 transition" onClick={handlePrev}><SkipBack size={32} fill="currentColor" /></button>
+            <button className="text-gray-400 hover:text-white transition active:scale-90"><Shuffle size={24} /></button>
+            <button className="text-white hover:text-lime-400 active:scale-75 transition" onClick={handlePrev}><SkipBack size={36} fill="currentColor" /></button>
             <button 
-              className="w-20 h-20 bg-[#D6F044] text-black rounded-full flex items-center justify-center shadow-xl hover:scale-105 active:scale-95 transition"
+              className="w-20 h-20 bg-[#D6F044] text-black rounded-full flex items-center justify-center shadow-2xl hover:scale-105 active:scale-90 transition transform-gpu"
               onClick={() => setIsPlaying(!isPlaying)}
             >
-              {isPlaying ? <Pause size={32} fill="currentColor" /> : <Play size={32} fill="currentColor" className="ml-1" />}
+              {isPlaying ? <Pause size={36} fill="currentColor" /> : <Play size={36} fill="currentColor" className="ml-1" />}
             </button>
-            <button className="text-white active:scale-90 transition" onClick={handleNext}><SkipForward size={32} fill="currentColor" /></button>
-            <button className="text-gray-400 hover:text-white transition"><Repeat size={24} /></button>
+            <button className="text-white hover:text-lime-400 active:scale-75 transition" onClick={handleNext}><SkipForward size={36} fill="currentColor" /></button>
+            <button className="text-gray-400 hover:text-white transition active:scale-90"><Repeat size={24} /></button>
           </div>
 
-          <div className="w-full max-w-md glass rounded-3xl p-4 mb-8">
-            <div className="flex justify-between items-center mb-4 px-2">
-              <h3 className="font-bold text-sm">Now Playing Details</h3>
-              <button className="text-[10px] font-bold text-lime-400 uppercase tracking-wider" onClick={() => setShowLyrics(!showLyrics)}>
-                {showLyrics ? 'Hide Lyrics' : 'View Lyrics'}
-              </button>
-            </div>
+          {/* Lyrics / Meta Toggle */}
+          <div className="w-full glass rounded-[32px] p-6 mb-4 min-h-[140px] flex flex-col items-center justify-center">
+            <button onClick={() => setShowLyrics(!showLyrics)} className="text-[10px] font-bold text-lime-400 uppercase tracking-widest mb-4 hover:opacity-80 transition">
+              {showLyrics ? 'HIDE LYRICS' : 'VIEW LYRICS'}
+            </button>
             
-            {showLyrics ? (
-               <div className="p-4 bg-black/40 rounded-2xl min-h-[150px] animate-fade-in overflow-y-auto max-h-40">
-                  <p className="text-center italic text-gray-300 leading-relaxed font-medium">
-                    "{lyrics}"
-                  </p>
-               </div>
-            ) : (
-              <div className="p-4 text-center opacity-50 text-xs">
-                 Streaming via YouTube audio bridge. Use settings to update API key.
-              </div>
-            )}
+            <div className="w-full h-full overflow-y-auto no-scrollbar text-center px-4">
+              {showLyrics ? (
+                 <p className="italic text-sm text-gray-300 leading-relaxed animate-fade-in">
+                    {lyrics}
+                 </p>
+              ) : (
+                <div className="text-[10px] text-gray-500 font-medium tracking-wide">
+                  Bitrate: {quality === 'High' ? '320kbps' : quality === 'Medium' ? '192kbps' : '128kbps'} • Audio Engine v2.0
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
-        <footer className="p-6 border-t border-white/10 flex justify-between items-center">
-          <div className="flex items-center gap-2 cursor-pointer group" onClick={toggleBluetooth}>
-            <div className={`p-2 rounded-full ${bluetoothDevice ? 'bg-blue-500/20 text-blue-400' : 'bg-white/10 text-gray-400'} group-hover:scale-110 transition`}>
-              <Bluetooth size={18} />
+        <footer className="p-8 border-t border-white/5 flex justify-between items-center max-w-xl mx-auto w-full">
+          {/* Fix: Resolved missing setBluetoothDevice and bluetoothDevice references */}
+          <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setBluetoothDevice(prev => prev ? null : "JBL Pulse 5")}>
+            <div className={`p-2 rounded-full transition ${bluetoothDevice ? 'bg-blue-500/20 text-blue-400' : 'bg-white/5 text-gray-500'}`}>
+              <Bluetooth size={20} />
             </div>
-            <div className="text-[10px] font-bold tracking-widest uppercase">
-              <p className="text-gray-500">Output Device</p>
+            <div className="text-[10px] font-bold uppercase tracking-widest">
+              <p className="text-gray-500 text-[8px]">Device Output</p>
               <p className={bluetoothDevice ? 'text-blue-400' : 'text-gray-300'}>{bluetoothDevice || "Phone Speaker"}</p>
             </div>
           </div>
           <div className="flex gap-4">
-             <button className="p-2 glass rounded-full"><Mic2 size={18} /></button>
-             <button className="p-2 glass rounded-full"><Volume2 size={18} /></button>
+             <button className="p-2 glass rounded-full hover:text-lime-400 transition"><Volume2 size={20} /></button>
+             <button className="p-2 glass rounded-full hover:text-lime-400 transition"><Mic2 size={20} /></button>
           </div>
         </footer>
       </div>
 
+      {/* MINI PLAYER (Visible when overlay is closed) */}
       {!isPlayerOpen && (
         <div 
-          className="fixed bottom-24 left-6 right-6 z-40 glass rounded-3xl p-3 flex items-center shadow-2xl cursor-pointer hover:bg-white/10 transition group border border-white/10"
+          className="fixed bottom-28 left-6 right-6 z-40 glass rounded-3xl p-3 flex items-center shadow-2xl cursor-pointer hover:bg-white/10 transition group border border-white/10 animate-slide-up"
           onClick={() => setIsPlayerOpen(true)}
         >
-          <img src={currentSong.cover} className={`w-14 h-14 rounded-2xl object-cover shadow-lg ${isPlaying ? 'animate-[spin_8s_linear_infinite]' : ''}`} />
-          <div className="ml-4 flex-1 overflow-hidden">
+          <div className="relative w-14 h-14 rounded-2xl overflow-hidden shadow-lg mr-4">
+            <img src={currentSong.cover} className={`w-full h-full object-cover transition-transform duration-[8000ms] ease-linear ${isPlaying ? 'scale-150 rotate-12' : ''}`} />
+            {isBuffering && (
+              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                <div className="w-6 h-6 border-2 border-lime-400 border-t-transparent rounded-full animate-spin" />
+              </div>
+            )}
+          </div>
+          <div className="flex-1 overflow-hidden">
             <h4 className="font-bold text-sm truncate">{currentSong.title}</h4>
             <p className="text-xs text-gray-400 truncate">{currentSong.artist}</p>
           </div>
-          <div className="flex gap-3 px-2">
-            <button className="p-2 rounded-full hover:bg-white/20 transition" onClick={(e) => { e.stopPropagation(); setIsPlaying(!isPlaying); }}>
-              {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
+          <div className="flex gap-2 px-2">
+            <button className="p-2 hover:bg-white/10 rounded-full transition active:scale-90" onClick={(e) => { e.stopPropagation(); setIsPlaying(!isPlaying); }}>
+              {isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
             </button>
-            <button className="p-2 rounded-full hover:bg-white/20 transition" onClick={(e) => { e.stopPropagation(); handleNext(); }}>
-              <SkipForward size={20} fill="currentColor" />
+            <button className="p-2 hover:bg-white/10 rounded-full transition active:scale-90" onClick={(e) => { e.stopPropagation(); handleNext(); }}>
+              <SkipForward size={22} fill="currentColor" />
             </button>
           </div>
         </div>
       )}
 
-      <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 glass rounded-full px-6 py-3 flex items-center gap-8 shadow-2xl border border-white/20">
+      {/* NAVIGATION BAR */}
+      <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40 glass rounded-full px-8 py-3 flex items-center gap-10 shadow-2xl border border-white/10">
         {[
           { id: Tab.Home, icon: Home },
           { id: Tab.Playlists, icon: ListMusic },
@@ -557,10 +524,10 @@ const App: React.FC = () => {
         ].map(item => (
           <button 
             key={item.id} 
-            className={`p-2 rounded-full transition-all duration-300 ${currentTab === item.id ? 'bg-[#D6F044] text-black scale-110 shadow-lg' : 'text-gray-400 hover:text-white'}`}
+            className={`p-2 rounded-full transition-all duration-300 active:scale-90 ${currentTab === item.id ? 'bg-[#D6F044] text-black shadow-[0_0_20px_rgba(214,240,68,0.3)] scale-110' : 'text-gray-400 hover:text-white'}`}
             onClick={() => setCurrentTab(item.id)}
           >
-            <item.icon size={22} strokeWidth={currentTab === item.id ? 2.5 : 2} />
+            <item.icon size={24} strokeWidth={currentTab === item.id ? 2.5 : 2} />
           </button>
         ))}
       </nav>
