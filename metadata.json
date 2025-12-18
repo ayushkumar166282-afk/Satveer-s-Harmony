@@ -1,0 +1,8 @@
+{
+  "name": "Satveer's Harmony",
+  "description": "A high-fidelity music player with glassmorphic UI, hybrid search, and advanced audio tools.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
