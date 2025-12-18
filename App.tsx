@@ -34,7 +34,7 @@ const App: React.FC = () => {
 
   // Initialize Media Session for background control
   useEffect(() => {
-    if ('mediaSession' in navigator) {
+    if ('mediaSession' in navigator && currentSong) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentSong.title,
         artist: currentSong.artist,
@@ -53,38 +53,45 @@ const App: React.FC = () => {
 
   // Combined Effect for Playback and Stream Resolution
   useEffect(() => {
+    let active = true;
     const handlePlayback = async () => {
       // Resolve YouTube Stream if necessary
       if (currentSong.id.startsWith('yt-') && currentSong.url === 'PENDING_YT_STREAM') {
         setIsBuffering(true);
         const videoId = currentSong.id.replace('yt-', '');
         const realUrl = await getYoutubeStreamUrl(videoId);
+        if (!active) return;
         setIsBuffering(false);
         if (realUrl) {
           setCurrentSong(prev => ({ ...prev, url: realUrl }));
-          return; // The next effect cycle will trigger play()
+          return; 
+        } else {
+          console.error("Failed to resolve stream for", videoId);
+          setIsPlaying(false);
+          return;
         }
       }
 
-      if (isPlaying) {
-        audioRef.current?.play().catch(() => {
-          console.warn("Autoplay blocked or stream invalid. User interaction required.");
+      if (isPlaying && audioRef.current) {
+        audioRef.current.play().catch((e) => {
+          console.warn("Playback failed:", e);
         });
         setShowNotification(true);
-      } else {
-        audioRef.current?.pause();
+      } else if (audioRef.current) {
+        audioRef.current.pause();
       }
     };
 
     handlePlayback();
-  }, [isPlaying, currentSong]);
+    return () => { active = false; };
+  }, [isPlaying, currentSong.id, currentSong.url]);
 
   useEffect(() => {
     if (showLyrics && currentSong) {
       setLyrics("Loading lyrics...");
       fetchLyrics(currentSong.title, currentSong.artist).then(setLyrics);
     }
-  }, [showLyrics, currentSong]);
+  }, [showLyrics, currentSong.id]);
 
   const handleProgress = () => {
     if (audioRef.current) {
@@ -193,6 +200,11 @@ const App: React.FC = () => {
         src={currentSong.url} 
         onTimeUpdate={handleProgress} 
         onEnded={handleNext}
+        onError={() => {
+          if (currentSong.url !== 'PENDING_YT_STREAM') {
+            console.error("Audio failed to load");
+          }
+        }}
       />
 
       <div 
@@ -486,14 +498,6 @@ const App: React.FC = () => {
                     <div className="w-4 h-4 bg-gray-500 rounded-full" />
                   </div>
                 </div>
-
-                <div className="flex justify-between items-center py-4 border-t border-white/5">
-                   <div>
-                    <h3 className="font-bold">Storage</h3>
-                    <p className="text-xs text-gray-400">2.4GB used of 128GB</p>
-                  </div>
-                  <button className="text-xs text-gray-400 border border-gray-700 px-3 py-1 rounded-full">MANAGE</button>
-                </div>
               </div>
             </div>
 
@@ -578,7 +582,7 @@ const App: React.FC = () => {
             ) : (
               <div className="space-y-3 max-h-40 overflow-y-auto no-scrollbar">
                 {localSongs.slice(1, 4).map(song => (
-                  <div key={song.id} className="flex items-center p-2 rounded-2xl hover:bg-white/5 cursor-pointer" onClick={() => setCurrentSong(song)}>
+                  <div key={song.id} className="flex items-center p-2 rounded-2xl hover:bg-white/5 cursor-pointer" onClick={() => { setCurrentSong(song); setIsPlaying(true); }}>
                     <img src={song.cover} className="w-10 h-10 rounded-lg object-cover" />
                     <div className="ml-3 flex-1">
                       <h4 className="text-sm font-bold truncate">{song.title}</h4>
